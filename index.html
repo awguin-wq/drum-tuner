@@ -154,25 +154,6 @@ const DSP = {
     }
   },
 
-  // Find the hit inside a recent buffer and return the post-attack segment.
-  findSegment(buf, sr, thresholdRms) {
-    const blk = Math.round(sr * 0.005);
-    let onset = -1;
-    for (let i = 0; i + blk <= buf.length; i += blk) {
-      let s = 0; for (let j = i; j < i + blk; j++) s += buf[j] * buf[j];
-      if (Math.sqrt(s / blk) >= thresholdRms) { onset = i; break; }
-    }
-    if (onset < 0) return null;
-    // loudest sample in the first 60 ms after onset = end of the stick attack
-    let peakIdx = onset, peak = 0;
-    const end = Math.min(buf.length, onset + Math.round(sr * 0.06));
-    for (let i = onset; i < end; i++) { const a = Math.abs(buf[i]); if (a > peak) { peak = a; peakIdx = i; } }
-    const start = peakIdx + Math.round(sr * this.ATTACK_SKIP_MS / 1000);
-    const len = Math.min(Math.round(sr * this.WINDOW_MS / 1000), buf.length - start);
-    if (len < sr * 0.15) return null;          // need at least 150 ms of ring
-    return buf.subarray(start, start + len);
-  },
-
   // Returns { hz, peaks } or null. mode: 'lug' | 'fund'
   analyze(seg, sr, mode) {
     const N = this.FFT_SIZE, re = new Float64Array(N), im = new Float64Array(N);
@@ -339,10 +320,19 @@ $('undo').onclick = () => {
   const d = drum(), h = d.history.pop(); if (!h) return;
   d.readings[h.lug] = h.prev; d.selected = h.lug; save(); renderRing(); renderStats(); renderReadout(0);
 };
-$('clear').onclick = () => {
-  if (!confirm(`Clear all readings for ${drum().name}?`)) return;
-  const d = drum(); d.readings = Array(d.lugs).fill(0); d.history = []; d.selected = 0; save(); renderAll();
-};
+// Tap once to arm, tap again within 3 s to confirm. (System pop-ups pause the mic on iPhone.)
+function confirmTap(btn, label, action) {
+  const original = btn.textContent;
+  btn.onclick = () => {
+    if (btn.dataset.armed) { clearTimeout(+btn.dataset.armed); delete btn.dataset.armed; btn.textContent = original; btn.style.color = ''; action(); return; }
+    btn.textContent = label; btn.style.color = 'var(--red)';
+    btn.dataset.armed = setTimeout(() => { delete btn.dataset.armed; btn.textContent = original; btn.style.color = ''; }, 3000);
+  };
+}
+confirmTap($('clear'), 'Tap to confirm', () => {
+  const d = drum(); d.readings = Array(d.lugs).fill(0); d.history = []; d.selected = 0; save(); renderAll(); resetDetector();
+  if (ctx) $('status').textContent = `Cleared. Hit lug 1 when ready.`;
+});
 $('useAvg').onclick = () => {
   const vals = drum().readings.filter(Boolean); if (!vals.length) return;
   drum().target = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 10) / 10; save(); renderAll();
@@ -362,65 +352,141 @@ $('sLugs').onchange = e => {
 };
 $('sTarget').onchange = e => { drum().target = Math.max(0, +e.target.value || 0); save(); renderAll(); };
 $('addDrum').onclick = () => {
-  const name = prompt('Name for the new drum:', 'Tom 3'); if (!name) return;
-  S.drums.push({ name: name.trim(), lugs: 6, target: 0, readings: Array(6).fill(0), selected: 0, history: [] });
+  const name = 'Drum ' + (S.drums.length + 1);
+  S.drums.push({ name, lugs: 6, target: 0, readings: Array(6).fill(0), selected: 0, history: [] });
   S.current = S.drums.length - 1; save(); renderAll();
+  $('sName').focus(); $('sName').select();
 };
-$('delDrum').onclick = () => {
-  if (S.drums.length <= 1 || !confirm(`Delete ${drum().name}?`)) return;
+confirmTap($('delDrum'), 'Tap to delete', () => {
+  if (S.drums.length <= 1) return;
   S.drums.splice(S.current, 1); S.current = 0; save(); renderAll();
+});
+
+// ---------------------------------------------------------------------------
+// Audio. Every incoming sample goes into a 3-second ring buffer. A hit is a
+// sudden jump in level (works even while the previous hit is still ringing).
+// The "jump" is measured on the high-frequency click of the stick, so the low
+// ring of a floor tom or kick can't hide the next hit.
+// Each hit is measured from just after its attack until 400 ms later, or until
+// the next hit starts — whichever comes first.
+// ---------------------------------------------------------------------------
+const HIT = {
+  BLOCK_MS: 5,          // level is measured in 5 ms blocks
+  JUMP_DB: 9,           // a new hit = this much louder than ~20 ms earlier
+  MIN_GAP_MS: 120,      // ignore stick bounce / attack wobble
+  MIN_RING_MS: 250,     // need at least this much clean ring to trust a reading
 };
+let ctx, stream, proc, sink, ring, ringSize, total = 0, looping = false;
+let blockAcc = 0, clickAcc = 0, prevSample = 0, blockN = 0, blockSize = 240, clicks = [], lastOnset = -1e12, pending = null, levelDb = -100;
+const thresholdDb = () => -20 - S.sens * 0.4;   // slider 0..100 -> -20 .. -60 dBFS
 
-// ---------------------------------------------------------------------------
-// Audio: detect a hit, wait for the ring, then analyse.
-// ---------------------------------------------------------------------------
-let ctx, small, big, smallBuf, bigBuf, busyUntil = 0, armed = true, noiseFloor = 0.001;
-// slider 0..100 -> hit threshold from -20 dBFS (low sensitivity) to -60 dBFS (high)
-const thresholdDb = () => -20 - S.sens * 0.4;
+function resetDetector() { pending = null; lastOnset = -1e12; clicks = []; }
 
-$('start').onclick = async () => {
+async function startMic() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    if (ctx) { try { await ctx.close(); } catch {} }
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     await ctx.resume();
+    const sr = ctx.sampleRate;
+    ringSize = Math.round(sr * 3); ring = new Float32Array(ringSize); total = 0;
+    blockSize = Math.round(sr * HIT.BLOCK_MS / 1000); blockAcc = 0; blockN = 0;
     const src = ctx.createMediaStreamSource(stream);
-    small = ctx.createAnalyser(); small.fftSize = 1024;
-    big = ctx.createAnalyser(); big.fftSize = 32768;       // ~0.68 s at 48 kHz
-    src.connect(small); src.connect(big);
-    smallBuf = new Float32Array(small.fftSize); bigBuf = new Float32Array(big.fftSize);
+    proc = ctx.createScriptProcessor(2048, 1, 1);
+    sink = ctx.createGain(); sink.gain.value = 0;          // processor must be connected to run; keep it silent
+    proc.onaudioprocess = e => onSamples(e.inputBuffer.getChannelData(0));
+    src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+    resetDetector();
     $('start').hidden = true;
-    $('status').textContent = `Listening (${ctx.sampleRate} Hz). Hit lug ${drum().selected + 1} about 3 cm from the edge.`;
-    requestAnimationFrame(loop);
+    $('status').textContent = `Listening. Hit lug ${drum().selected + 1} about 3 cm from the edge.`;
+    if (!looping) { looping = true; requestAnimationFrame(loop); }
   } catch (err) {
     $('status').textContent = 'Microphone blocked: ' + err.message + '. Allow mic access in Settings › Safari.';
   }
-};
+}
+$('start').onclick = startMic;
 
-function loop() {
-  small.getFloatTimeDomainData(smallBuf);
-  let s = 0; for (let i = 0; i < smallBuf.length; i++) s += smallBuf[i] * smallBuf[i];
-  const rms = Math.sqrt(s / smallBuf.length), db = 20 * Math.log10(rms + 1e-9), thr = thresholdDb();
-  $('lvl').style.width = Math.max(0, Math.min(100, (db + 85) / 80 * 100)) + '%';
-  $('lvl').style.background = db >= thr ? 'var(--amber)' : 'var(--green)';
-  $('thr').style.left = Math.max(0, Math.min(100, (thr + 85) / 80 * 100)) + '%';
-  const now = performance.now();
-  if (!armed && db < thr - 6 && now > busyUntil) armed = true;     // re-arm once the ring has died down
-  if (armed && now > busyUntil && db >= thr && rms > noiseFloor * 4) {
-    armed = false; busyUntil = now + 700;
-    $('status').textContent = 'Hit detected… listening to the ring';
-    setTimeout(() => capture(Math.pow(10, thr / 20)), 480);
+function onSamples(x) {
+  const sr = ctx.sampleRate;
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i];
+    ring[total % ringSize] = v; total++;
+    const d = v - prevSample; prevSample = v;     // simple high-pass: keeps the stick click, drops the low ring
+    blockAcc += v * v; clickAcc += d * d;
+    if (++blockN === blockSize) {
+      const db = 10 * Math.log10(blockAcc / blockN + 1e-18);
+      const click = 10 * Math.log10(clickAcc / blockN + 1e-18);
+      blockAcc = 0; clickAcc = 0; blockN = 0; levelDb = db;
+      clicks.push(click); if (clicks.length > 8) clicks.shift();
+      const before = clicks.length === 8 ? Math.max(clicks[0], clicks[1], clicks[2], clicks[3]) : 0;  // ~20–40 ms ago
+      const gapOk = total - lastOnset > sr * HIT.MIN_GAP_MS / 1000;
+      if (db >= thresholdDb() && click - before >= HIT.JUMP_DB && gapOk) onHit(total - blockSize);
+    }
   }
-  if (armed && db < thr) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
-  requestAnimationFrame(loop);
+  if (pending && total >= pending.due) finishHit(total);
 }
 
-function capture(thrRms) {
-  big.getFloatTimeDomainData(bigBuf);
-  const seg = DSP.findSegment(bigBuf, ctx.sampleRate, thrRms * 0.7);
-  const res = seg && DSP.analyze(seg, ctx.sampleRate, S.mode);
-  if (!res) { $('status').textContent = 'Could not read that hit — try again'; return; }
-  record(res.hz);
-  $('status').textContent = `Got it. Now hit lug ${drum().selected + 1}.`;
+function onHit(onset) {
+  const sr = ctx.sampleRate;
+  if (pending) finishHit(onset - Math.round(sr * 0.01));   // previous hit got cut short by this one
+  lastOnset = onset;
+  pending = { onset, due: onset + Math.round(sr * (0.06 + DSP.ATTACK_SKIP_MS / 1000 + DSP.WINDOW_MS / 1000)) };
+  $('status').textContent = 'Hit detected… listening to the ring';
+  flash();
+}
+
+function finishHit(endAbs) {
+  const sr = ctx.sampleRate, h = pending; pending = null;
+  const avail = Math.min(endAbs, total) - h.onset;
+  const raw = new Float32Array(Math.max(0, avail));
+  for (let i = 0; i < raw.length; i++) raw[i] = ring[(h.onset + i) % ringSize];
+  // end of the stick attack = loudest point in the first 60 ms
+  let peakIdx = 0, peak = 0;
+  for (let i = 0; i < Math.min(raw.length, sr * 0.06); i++) { const a = Math.abs(raw[i]); if (a > peak) { peak = a; peakIdx = i; } }
+  const from = peakIdx + Math.round(sr * DSP.ATTACK_SKIP_MS / 1000);
+  const seg = raw.subarray(from, Math.min(raw.length, from + Math.round(sr * DSP.WINDOW_MS / 1000)));
+  const lug = drum().selected + 1;
+  if (seg.length < sr * HIT.MIN_RING_MS / 1000) {
+    $('status').textContent = `Too quick — let it ring a moment. Hit lug ${lug} again.`;
+    return;
+  }
+  setTimeout(() => {      // run the FFT outside the audio callback
+    const res = DSP.analyze(seg, sr, S.mode);
+    if (!res) { $('status').textContent = `Couldn't read that — hit lug ${lug} again.`; return; }
+    record(res.hz);
+    $('status').textContent = `Got it. Now hit lug ${drum().selected + 1}.`;
+  }, 0);
+}
+
+function flash() {
+  const el = $('hz'); el.style.transition = 'none'; el.style.opacity = '0.35';
+  requestAnimationFrame(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '1'; });
+}
+
+// iPhone can pause the mic (phone call, Siri, switching apps, pop-ups). Bring it back.
+async function ensureMic() {
+  if (!ctx) return;
+  const trackDead = !stream || stream.getAudioTracks().every(t => t.readyState === 'ended');
+  if (trackDead || ctx.state === 'closed') return startMic();
+  if (ctx.state !== 'running') { try { await ctx.resume(); } catch {} resetDetector(); }
+}
+document.addEventListener('pointerdown', ensureMic, true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) ensureMic(); });
+
+// Screen updates only (detection happens in onSamples).
+function loop() {
+  requestAnimationFrame(loop);
+  const paused = ctx.state !== 'running' || stream.getAudioTracks().every(t => t.readyState === 'ended');
+  if (paused) {
+    if ($('start').hidden) { $('start').hidden = false; $('start').textContent = 'Mic paused — tap to resume'; $('status').textContent = 'Microphone paused by the phone'; }
+    $('lvl').style.width = '0%'; return;
+  }
+  if (!$('start').hidden) { $('start').hidden = true; $('status').textContent = `Listening. Hit lug ${drum().selected + 1}.`; }
+  const thr = thresholdDb();
+  $('lvl').style.width = Math.max(0, Math.min(100, (levelDb + 85) / 80 * 100)) + '%';
+  $('lvl').style.background = levelDb >= thr ? 'var(--amber)' : 'var(--green)';
+  $('thr').style.left = Math.max(0, Math.min(100, (thr + 85) / 80 * 100)) + '%';
 }
 
 renderAll();
