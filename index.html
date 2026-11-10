@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0b0d">
+<title>Drum Tuner – Test Version</title>
+<style>
+  :root {
+    --bg: #0b0b0d; --panel: #16161a; --line: #26262c; --text: #f2f2f4; --dim: #8a8a94;
+    --green: #34c77b; --amber: #f2a93b; --red: #ef5350; --accent: #e8e8ec; --sel: #5b8cff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { padding: env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 14px); max-width: 520px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 0 8px; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; border: 1px dashed var(--dim); display: grid; place-items: center; font-size: 10px; color: var(--dim); }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 0 10px; flex: 1; }
+  button, select, input { font: inherit; color: var(--text); }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+  button:active { opacity: .7; }
+  button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  button.on { background: var(--text); color: #000; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .scroll { overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .scroll::-webkit-scrollbar { display: none; }
+  .chip { white-space: nowrap; border-radius: 999px; padding: 7px 14px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 10px; }
+  .readout { text-align: center; padding: 16px 12px 12px; }
+  .hz { font-size: 56px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+  .hz small { font-size: 20px; color: var(--dim); font-weight: 500; }
+  .note { font-size: 20px; color: var(--dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .diff { margin-top: 6px; font-size: 15px; min-height: 20px; font-weight: 600; }
+  .seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .seg button { flex: 1; border: 0; background: transparent; padding: 7px; border-radius: 8px; color: var(--dim); }
+  .seg button.on { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+  .meter { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; flex: 1; position: relative; }
+  .meter i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--green); transition: width .05s; }
+  .meter b { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); }
+  label { color: var(--dim); font-size: 13px; }
+  input[type=range] { flex: 1; accent-color: var(--text); }
+  input[type=number] { width: 80px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px; }
+  svg { display: block; margin: 0 auto; max-width: 100%; touch-action: manipulation; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; text-align: center; margin-top: 6px; }
+  .stats div { background: var(--bg); border-radius: 10px; padding: 8px 4px; }
+  .stats b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stats span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  .advice { text-align: center; min-height: 22px; margin: 6px 0 2px; font-weight: 600; }
+  .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .status { text-align: center; color: var(--dim); font-size: 13px; min-height: 18px; margin-top: 6px; }
+  #start { width: 100%; padding: 16px; font-size: 17px; margin-top: 10px; }
+  .legend { display: flex; justify-content: center; gap: 12px; font-size: 12px; color: var(--dim); margin-top: 4px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  .muted { color: var(--dim); font-size: 12px; text-align: center; margin-top: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">LOGO</div>
+  <h1>Drum Tuner <span style="color:var(--dim);font-weight:400">· test</span></h1>
+  <button id="settingsBtn" aria-label="Drum settings">Edit</button>
+</header>
+
+<div class="row scroll" id="drums"></div>
+
+<button id="start" class="primary">Tap to start microphone</button>
+
+<div class="panel readout">
+  <div class="hz" id="hz">—<small> Hz</small></div>
+  <div class="note" id="note">&nbsp;</div>
+  <div class="diff" id="diff"></div>
+  <div class="status" id="status">Mic is off</div>
+</div>
+
+<div class="panel">
+  <div class="seg" id="mode">
+    <button data-mode="lug" class="on">Lug pitch</button>
+    <button data-mode="fund">Fundamental</button>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <label style="width:74px">Input</label>
+    <div class="meter"><i id="lvl"></i><b id="thr"></b></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label style="width:74px">Sensitivity</label>
+    <input type="range" id="sens" min="0" max="100" value="60">
+  </div>
+</div>
+
+<div class="panel">
+  <svg id="ring" viewBox="0 0 300 300" width="300" height="300"></svg>
+  <div class="legend"><span><i style="background:var(--green)"></i>≤1%</span><span><i style="background:var(--amber)"></i>1–3%</span><span><i style="background:var(--red)"></i>&gt;3%</span><span id="refLabel"></span></div>
+  <div class="advice" id="advice"></div>
+  <div class="stats">
+    <div><b id="avg">—</b><span>Average</span></div>
+    <div><b id="spread">—</b><span>Spread</span></div>
+    <div><b id="tgt">—</b><span>Target</span></div>
+  </div>
+  <div class="actions">
+    <button id="undo">Undo</button>
+    <button id="clear">Clear</button>
+    <button id="useAvg">Avg → target</button>
+  </div>
+</div>
+
+<div class="panel" id="settings" hidden>
+  <div class="row"><label style="width:90px">Name</label><input id="sName" style="flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px"></div>
+  <div class="row" style="margin-top:8px"><label style="width:90px">Lugs</label><input type="number" id="sLugs" min="4" max="16" step="1"></div>
+  <div class="row" style="margin-top:8px"><label style="width:90px">Target Hz</label><input type="number" id="sTarget" min="0" max="2000" step="0.1" placeholder="none"><label>blank = use median</label></div>
+  <div class="actions">
+    <button id="addDrum">+ Add drum</button>
+    <button id="delDrum">Delete drum</button>
+    <button id="closeSettings" class="primary">Done</button>
+  </div>
+</div>
+
+<p class="muted">Test version. Everything stays on this phone — nothing is uploaded.</p>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// DSP — this is the exact method the native iOS app will port to Swift/vDSP.
+// ---------------------------------------------------------------------------
+const DSP = {
+  MIN_HZ: 35, MAX_HZ: 1200,
+  ATTACK_SKIP_MS: 30,     // skip this long after the loudest point of the hit
+  WINDOW_MS: 400,         // analyse this much of the ring after the attack
+  FUND_RANGE_DB: 12,      // "Fundamental": lowest peak within 12 dB of the max
+  FFT_SIZE: 65536,        // zero-padded => ~0.7 Hz bins at 48 kHz
+
+  // In-place iterative radix-2 FFT.
+  fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const a = i + k, b = a + len / 2;
+          const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+          const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+  },
+
+  // Find the hit inside a recent buffer and return the post-attack segment.
+  findSegment(buf, sr, thresholdRms) {
+    const blk = Math.round(sr * 0.005);
+    let onset = -1;
+    for (let i = 0; i + blk <= buf.length; i += blk) {
+      let s = 0; for (let j = i; j < i + blk; j++) s += buf[j] * buf[j];
+      if (Math.sqrt(s / blk) >= thresholdRms) { onset = i; break; }
+    }
+    if (onset < 0) return null;
+    // loudest sample in the first 60 ms after onset = end of the stick attack
+    let peakIdx = onset, peak = 0;
+    const end = Math.min(buf.length, onset + Math.round(sr * 0.06));
+    for (let i = onset; i < end; i++) { const a = Math.abs(buf[i]); if (a > peak) { peak = a; peakIdx = i; } }
+    const start = peakIdx + Math.round(sr * this.ATTACK_SKIP_MS / 1000);
+    const len = Math.min(Math.round(sr * this.WINDOW_MS / 1000), buf.length - start);
+    if (len < sr * 0.15) return null;          // need at least 150 ms of ring
+    return buf.subarray(start, start + len);
+  },
+
+  // Returns { hz, peaks } or null. mode: 'lug' | 'fund'
+  analyze(seg, sr, mode) {
+    const N = this.FFT_SIZE, re = new Float64Array(N), im = new Float64Array(N);
+    const L = Math.min(seg.length, N);
+    let mean = 0; for (let i = 0; i < L; i++) mean += seg[i]; mean /= L;
+    for (let i = 0; i < L; i++) re[i] = (seg[i] - mean) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (L - 1))); // Hann
+    this.fft(re, im);
+    const binHz = sr / N;
+    const lo = Math.max(2, Math.floor(this.MIN_HZ / binHz)), hi = Math.min(N / 2 - 2, Math.ceil(this.MAX_HZ / binHz));
+    const db = new Float64Array(hi + 2);
+    for (let k = lo - 1; k <= hi + 1; k++) db[k] = 10 * Math.log10(re[k] * re[k] + im[k] * im[k] + 1e-20);
+    // local maxima
+    const peaks = [];
+    let maxDb = -Infinity;
+    for (let k = lo; k <= hi; k++) {
+      if (db[k] > db[k - 1] && db[k] >= db[k + 1]) {
+        peaks.push(k);
+        if (db[k] > maxDb) maxDb = db[k];
+      }
+    }
+    if (!peaks.length) return null;
+    let k;
+    if (mode === 'fund') {
+      k = peaks.find(p => db[p] >= maxDb - this.FUND_RANGE_DB && this.isProminent(db, p, lo, hi));
+      if (k === undefined) k = peaks.find(p => db[p] === maxDb);
+    } else {
+      k = peaks.find(p => db[p] === maxDb);
+    }
+    // parabolic interpolation on dB magnitudes
+    const a = db[k - 1], b = db[k], c = db[k + 1], d = a - 2 * b + c;
+    const p = d === 0 ? 0 : 0.5 * (a - c) / d;
+    return { hz: (k + p) * binHz, db: b, maxDb };
+  },
+
+  // ignore tiny ripples on the skirt of a big peak: require ~3 dB dip within ±8 Hz on both sides
+  isProminent(db, k, lo, hi) {
+    const span = Math.max(3, Math.round(8 / (48000 / this.FFT_SIZE)));
+    let left = db[k], right = db[k];
+    for (let i = k - 1; i >= Math.max(lo, k - span); i--) left = Math.min(left, db[i]);
+    for (let i = k + 1; i <= Math.min(hi, k + span); i++) right = Math.min(right, db[i]);
+    return db[k] - left >= 3 && db[k] - right >= 3;
+  },
+};
+window.DSP = DSP;
+
+// ---------------------------------------------------------------------------
+// Music helpers
+// ---------------------------------------------------------------------------
+const NOTES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+function noteOf(hz) {
+  const m = 69 + 12 * Math.log2(hz / 440), r = Math.round(m);
+  return { name: NOTES[(r % 12 + 12) % 12] + (Math.floor(r / 12) - 1), cents: Math.round((m - r) * 100) };
+}
+const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y), h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; };
+const fmt = (hz, d = 1) => hz ? hz.toFixed(d) : '—';
+
+// ---------------------------------------------------------------------------
+// State (saved in localStorage)
+// ---------------------------------------------------------------------------
+const KEY = 'drumTuner.v1';
+const defaults = () => ({
+  mode: 'lug', sens: 60, current: 0,
+  drums: [
+    ['Kick', 10], ['Snare', 10], ['Tom 1', 6], ['Tom 2', 6], ['Floor', 8],
+  ].map(([name, lugs]) => ({ name, lugs, target: 0, readings: Array(lugs).fill(0), selected: 0, history: [] })),
+});
+let S;
+try { S = JSON.parse(localStorage.getItem(KEY)) || defaults(); } catch { S = defaults(); }
+const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+const drum = () => S.drums[S.current];
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+function colorFor(hz, ref) {
+  if (!hz || !ref) return null;
+  const pct = Math.abs(hz - ref) / ref * 100;
+  return pct <= 1 ? 'var(--green)' : pct <= 3 ? 'var(--amber)' : 'var(--red)';
+}
+function reference(d) {
+  const vals = d.readings.filter(Boolean);
+  return d.target > 0 ? { hz: d.target, kind: 'target' } : vals.length >= 2 ? { hz: median(vals), kind: 'median' } : { hz: 0, kind: '' };
+}
+
+function renderDrums() {
+  $('drums').innerHTML = '';
+  S.drums.forEach((d, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (i === S.current ? ' on' : '');
+    b.textContent = d.name;
+    b.onclick = () => { S.current = i; save(); renderAll(); };
+    $('drums').appendChild(b);
+  });
+}
+
+function renderRing() {
+  const d = drum(), ref = reference(d), n = d.lugs, svg = $('ring');
+  const cx = 150, cy = 150, R = 112, r = n > 12 ? 17 : 21;
+  let html = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#26262c" stroke-width="2"/>`;
+  html += `<text x="${cx}" y="${cy - 6}" text-anchor="middle" fill="#f2f2f4" font-size="22" font-weight="700">${d.name}</text>`;
+  html += `<text x="${cx}" y="${cy + 18}" text-anchor="middle" fill="#8a8a94" font-size="13">${d.readings.filter(Boolean).length}/${n} lugs read</text>`;
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / n, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
+    const hz = d.readings[i], col = colorFor(hz, ref.hz) || '#16161a', sel = i === d.selected;
+    html += `<g data-lug="${i}" style="cursor:pointer">
+      <circle cx="${x}" cy="${y}" r="${r + 6}" fill="transparent"/>
+      <circle cx="${x}" cy="${y}" r="${r}" fill="${col}" stroke="${sel ? '#5b8cff' : '#3a3a42'}" stroke-width="${sel ? 4 : 1.5}"/>
+      <text x="${x}" y="${y + 4}" text-anchor="middle" font-size="${hz ? 11 : 12}" font-weight="600" fill="${hz ? '#000' : '#8a8a94'}">${hz ? Math.round(hz) : i + 1}</text></g>`;
+  }
+  svg.innerHTML = html;
+  svg.querySelectorAll('[data-lug]').forEach(g => g.onclick = () => { d.selected = +g.dataset.lug; save(); renderRing(); renderStats(); });
+}
+
+function renderStats() {
+  const d = drum(), vals = d.readings.filter(Boolean), ref = reference(d);
+  const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  $('avg').textContent = vals.length ? fmt(avg) : '—';
+  $('spread').textContent = vals.length > 1 ? fmt(Math.max(...vals) - Math.min(...vals)) + ' Hz' : '—';
+  $('tgt').textContent = d.target ? fmt(d.target) : 'median';
+  $('refLabel').textContent = ref.kind ? `vs ${ref.kind}` : '';
+  // advice for the selected lug, or the most recent reading
+  const idx = d.history.length ? d.history[d.history.length - 1].lug : d.selected, hz = d.readings[idx];
+  let adv = '';
+  if (hz && ref.hz) {
+    const pct = (hz - ref.hz) / ref.hz * 100;
+    adv = Math.abs(pct) <= 1 ? `Lug ${idx + 1}: in tune` : `Lug ${idx + 1}: ${pct < 0 ? 'tighten ↑' : 'loosen ↓'} (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+    $('advice').style.color = colorFor(hz, ref.hz);
+  }
+  $('advice').textContent = adv;
+}
+
+function renderReadout(hz) {
+  if (!hz) { $('hz').innerHTML = '—<small> Hz</small>'; $('note').innerHTML = '&nbsp;'; $('diff').textContent = ''; return; }
+  const n = noteOf(hz);
+  $('hz').innerHTML = `${hz.toFixed(1)}<small> Hz</small>`;
+  $('note').textContent = `${n.name}  ${n.cents >= 0 ? '+' : ''}${n.cents}¢`;
+  const ref = reference(drum());
+  if (ref.hz) {
+    const dHz = hz - ref.hz, pct = dHz / ref.hz * 100;
+    $('diff').textContent = `${dHz >= 0 ? '+' : ''}${dHz.toFixed(1)} Hz (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%) vs ${ref.kind}`;
+    $('diff').style.color = colorFor(hz, ref.hz);
+  } else $('diff').textContent = '';
+}
+
+function renderControls() {
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === S.mode));
+  $('sens').value = S.sens;
+  $('thr').style.left = Math.max(0, Math.min(100, (thresholdDb() + 85) / 80 * 100)) + '%';
+}
+
+function renderAll() { renderDrums(); renderRing(); renderStats(); renderControls(); renderReadout(0); if (!$('settings').hidden) fillSettings(); }
+
+// Recording a reading
+function record(hz) {
+  const d = drum(), lug = d.selected;
+  d.history.push({ lug, prev: d.readings[lug], prevSel: d.selected });
+  d.readings[lug] = Math.round(hz * 10) / 10;
+  d.selected = (lug + 1) % d.lugs;      // auto-advance
+  save(); renderRing(); renderStats(); renderReadout(hz);
+}
+
+$('undo').onclick = () => {
+  const d = drum(), h = d.history.pop(); if (!h) return;
+  d.readings[h.lug] = h.prev; d.selected = h.lug; save(); renderRing(); renderStats(); renderReadout(0);
+};
+$('clear').onclick = () => {
+  if (!confirm(`Clear all readings for ${drum().name}?`)) return;
+  const d = drum(); d.readings = Array(d.lugs).fill(0); d.history = []; d.selected = 0; save(); renderAll();
+};
+$('useAvg').onclick = () => {
+  const vals = drum().readings.filter(Boolean); if (!vals.length) return;
+  drum().target = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 10) / 10; save(); renderAll();
+};
+document.querySelectorAll('#mode button').forEach(b => b.onclick = () => { S.mode = b.dataset.mode; save(); renderControls(); });
+$('sens').oninput = e => { S.sens = +e.target.value; save(); renderControls(); };
+
+// Settings
+function fillSettings() { const d = drum(); $('sName').value = d.name; $('sLugs').value = d.lugs; $('sTarget').value = d.target || ''; }
+$('settingsBtn').onclick = () => { $('settings').hidden = !$('settings').hidden; fillSettings(); if (!$('settings').hidden) $('settings').scrollIntoView({ behavior: 'smooth' }); };
+$('closeSettings').onclick = () => { $('settings').hidden = true; };
+$('sName').onchange = e => { drum().name = e.target.value.trim() || 'Drum'; save(); renderAll(); };
+$('sLugs').onchange = e => {
+  const d = drum(), n = Math.max(4, Math.min(16, Math.round(+e.target.value) || d.lugs));
+  d.readings = Array.from({ length: n }, (_, i) => d.readings[i] || 0); d.lugs = n; d.selected = Math.min(d.selected, n - 1); d.history = [];
+  save(); renderAll();
+};
+$('sTarget').onchange = e => { drum().target = Math.max(0, +e.target.value || 0); save(); renderAll(); };
+$('addDrum').onclick = () => {
+  const name = prompt('Name for the new drum:', 'Tom 3'); if (!name) return;
+  S.drums.push({ name: name.trim(), lugs: 6, target: 0, readings: Array(6).fill(0), selected: 0, history: [] });
+  S.current = S.drums.length - 1; save(); renderAll();
+};
+$('delDrum').onclick = () => {
+  if (S.drums.length <= 1 || !confirm(`Delete ${drum().name}?`)) return;
+  S.drums.splice(S.current, 1); S.current = 0; save(); renderAll();
+};
+
+// ---------------------------------------------------------------------------
+// Audio: detect a hit, wait for the ring, then analyse.
+// ---------------------------------------------------------------------------
+let ctx, small, big, smallBuf, bigBuf, busyUntil = 0, armed = true, noiseFloor = 0.001;
+// slider 0..100 -> hit threshold from -20 dBFS (low sensitivity) to -60 dBFS (high)
+const thresholdDb = () => -20 - S.sens * 0.4;
+
+$('start').onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    const src = ctx.createMediaStreamSource(stream);
+    small = ctx.createAnalyser(); small.fftSize = 1024;
+    big = ctx.createAnalyser(); big.fftSize = 32768;       // ~0.68 s at 48 kHz
+    src.connect(small); src.connect(big);
+    smallBuf = new Float32Array(small.fftSize); bigBuf = new Float32Array(big.fftSize);
+    $('start').hidden = true;
+    $('status').textContent = `Listening (${ctx.sampleRate} Hz). Hit lug ${drum().selected + 1} about 3 cm from the edge.`;
+    requestAnimationFrame(loop);
+  } catch (err) {
+    $('status').textContent = 'Microphone blocked: ' + err.message + '. Allow mic access in Settings › Safari.';
+  }
+};
+
+function loop() {
+  small.getFloatTimeDomainData(smallBuf);
+  let s = 0; for (let i = 0; i < smallBuf.length; i++) s += smallBuf[i] * smallBuf[i];
+  const rms = Math.sqrt(s / smallBuf.length), db = 20 * Math.log10(rms + 1e-9), thr = thresholdDb();
+  $('lvl').style.width = Math.max(0, Math.min(100, (db + 85) / 80 * 100)) + '%';
+  $('lvl').style.background = db >= thr ? 'var(--amber)' : 'var(--green)';
+  $('thr').style.left = Math.max(0, Math.min(100, (thr + 85) / 80 * 100)) + '%';
+  const now = performance.now();
+  if (!armed && db < thr - 6 && now > busyUntil) armed = true;     // re-arm once the ring has died down
+  if (armed && now > busyUntil && db >= thr && rms > noiseFloor * 4) {
+    armed = false; busyUntil = now + 700;
+    $('status').textContent = 'Hit detected… listening to the ring';
+    setTimeout(() => capture(Math.pow(10, thr / 20)), 480);
+  }
+  if (armed && db < thr) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+  requestAnimationFrame(loop);
+}
+
+function capture(thrRms) {
+  big.getFloatTimeDomainData(bigBuf);
+  const seg = DSP.findSegment(bigBuf, ctx.sampleRate, thrRms * 0.7);
+  const res = seg && DSP.analyze(seg, ctx.sampleRate, S.mode);
+  if (!res) { $('status').textContent = 'Could not read that hit — try again'; return; }
+  record(res.hz);
+  $('status').textContent = `Got it. Now hit lug ${drum().selected + 1}.`;
+}
+
+renderAll();
+</script>
+</body>
+</html>
