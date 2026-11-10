@@ -117,7 +117,7 @@
   </div>
 </div>
 
-<p class="muted"><b style="color:var(--text)">Version 3</b> · Test version. Everything stays on this phone — nothing is uploaded.</p>
+<p class="muted"><b style="color:var(--text)">Version 4</b> · Test version. Everything stays on this phone — nothing is uploaded.<br><span id="diag"></span></p>
 
 <script>
 'use strict';
@@ -376,31 +376,83 @@ const HIT = {
   MIN_GAP_MS: 120,      // ignore stick bounce / attack wobble
   MIN_RING_MS: 250,     // need at least this much clean ring to trust a reading
 };
-let ctx, stream, proc, sink, ring, ringSize, total = 0, looping = false;
+let ctx, stream, src, sink, path = '', pathNodes = [], pollTimer, lastPollTime = 0, pollBuf, watchdog;
+let ring, ringSize, total = 0, looping = false, peakSinceStart = 0;
 let blockAcc = 0, clickAcc = 0, prevSample = 0, blockN = 0, blockSize = 240, clicks = [], lastOnset = -1e12, pending = null, levelDb = -100;
 const thresholdDb = () => -20 - S.sens * 0.4;   // slider 0..100 -> -20 .. -60 dBFS
 
 function resetDetector() { pending = null; lastOnset = -1e12; clicks = []; }
 
+// Three ways to receive mic samples; phones differ in which ones work.
+// We try them in order and move on if one delivers only silence.
+const PATHS = ['worklet', 'script', 'poll'];
+const WORKLET_SRC = `class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) { this.buf[this.n++] = ch[i]; if (this.n === 1024) { this.port.postMessage(this.buf.slice(0)); this.n = 0; } }
+    return true;
+  }
+}
+registerProcessor('tap', Tap);`;
+
+function stopPath() {
+  clearInterval(pollTimer); clearTimeout(watchdog);
+  pathNodes.forEach(n => { try { n.disconnect(); } catch {} if (n.port) n.port.onmessage = null; if ('onaudioprocess' in n) n.onaudioprocess = null; });
+  pathNodes = []; path = '';
+}
+
+async function startPath(i) {
+  stopPath();
+  if (i >= PATHS.length) { $('status').textContent = 'No sound is reaching the app. Check that Safari has microphone access (Settings › Safari › Microphone).'; return; }
+  const name = PATHS[i];
+  try {
+    if (name === 'worklet') {
+      if (!ctx.audioWorklet) throw new Error('not supported');
+      if (!ctx._tapLoaded) { await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }))); ctx._tapLoaded = true; }
+      const node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = e => onSamples(e.data);
+      src.connect(node); node.connect(sink); pathNodes = [node];
+    } else if (name === 'script') {
+      const node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = e => onSamples(e.inputBuffer.getChannelData(0));
+      src.connect(node); node.connect(sink); pathNodes = [node];
+    } else {
+      const an = ctx.createAnalyser(); an.fftSize = 32768; src.connect(an); pathNodes = [an];
+      pollBuf = new Float32Array(an.fftSize); lastPollTime = ctx.currentTime;
+      pollTimer = setInterval(() => {            // copy only the samples that are new since last time
+        const t = ctx.currentTime, n = Math.min(pollBuf.length, Math.round((t - lastPollTime) * ctx.sampleRate));
+        if (n <= 0) return;
+        lastPollTime = t; an.getFloatTimeDomainData(pollBuf); onSamples(pollBuf.subarray(pollBuf.length - n));
+      }, 40);
+    }
+  } catch (e) { return startPath(i + 1); }
+  path = name; peakSinceStart = 0; const before = total;
+  watchdog = setTimeout(() => {                 // real mics are never perfectly silent
+    if (ctx.state === 'running' && (total - before < ctx.sampleRate * 0.2 || peakSinceStart === 0)) startPath(i + 1);
+  }, 700);
+}
+
 async function startMic() {
   try {
+    stopPath();
     if (ctx) { try { await ctx.close(); } catch {} }
     if (stream) stream.getTracks().forEach(t => t.stop());
+    ctx = new (window.AudioContext || window.webkitAudioContext)();   // created inside the tap, as iPhone prefers
+    ctx.resume();
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
     await ctx.resume();
     const sr = ctx.sampleRate;
     ringSize = Math.round(sr * 3); ring = new Float32Array(ringSize); total = 0;
     blockSize = Math.round(sr * HIT.BLOCK_MS / 1000); blockAcc = 0; blockN = 0;
-    const src = ctx.createMediaStreamSource(stream);
-    proc = ctx.createScriptProcessor(2048, 1, 1);
-    sink = ctx.createGain(); sink.gain.value = 0;          // processor must be connected to run; keep it silent
-    proc.onaudioprocess = e => onSamples(e.inputBuffer.getChannelData(0));
-    src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+    src = ctx.createMediaStreamSource(stream);
+    sink = ctx.createGain(); sink.gain.value = 0; sink.connect(ctx.destination);   // keeps nodes running, silently
     resetDetector();
     $('start').hidden = true;
     $('status').textContent = `Listening. Hit lug ${drum().selected + 1} about 3 cm from the edge.`;
     if (!looping) { looping = true; requestAnimationFrame(loop); }
+    const forced = PATHS.indexOf(new URLSearchParams(location.search).get('mic'));   // ?mic=poll etc. for testing
+    await startPath(Math.max(0, forced));
   } catch (err) {
     $('status').textContent = 'Microphone blocked: ' + err.message + '. Allow mic access in Settings › Safari.';
   }
@@ -410,7 +462,7 @@ $('start').onclick = startMic;
 function onSamples(x) {
   const sr = ctx.sampleRate;
   for (let i = 0; i < x.length; i++) {
-    const v = x[i];
+    const v = x[i]; if (v !== 0) peakSinceStart = 1;
     ring[total % ringSize] = v; total++;
     const d = v - prevSample; prevSample = v;     // simple high-pass: keeps the stick click, drops the low ring
     blockAcc += v * v; clickAcc += d * d;
@@ -477,7 +529,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) ensu
 // Screen updates only (detection happens in onSamples).
 function loop() {
   requestAnimationFrame(loop);
-  const paused = ctx.state !== 'running' || stream.getAudioTracks().every(t => t.readyState === 'ended');
+  const paused = ctx.state !== 'running' || !stream || stream.getAudioTracks().every(t => t.readyState === 'ended');
+  $('diag').textContent = `mic: ${path || '…'} · ${Math.round(ctx.sampleRate / 100) / 10} kHz · ${levelDb > -99 ? Math.round(levelDb) + ' dB' : 'no signal'}`;
   if (paused) {
     if ($('start').hidden) { $('start').hidden = false; $('start').textContent = 'Mic paused — tap to resume'; $('status').textContent = 'Microphone paused by the phone'; }
     $('lvl').style.width = '0%'; return;
